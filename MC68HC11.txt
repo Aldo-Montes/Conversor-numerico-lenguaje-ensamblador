@@ -1,0 +1,958 @@
+;******************************************************************
+; CONVERSOR MC68HC11 - VERSION FINAL 
+;
+;Proyecto 2
+;Calificacion: 7
+;Equipo: Aranda Marròn Fernando 
+;Nieto Montes Aldo 
+;Cote Martinez Axel Fabian
+;Sosa Cibriàn Sebastian
+;Fecha: 27/NOV/2025
+;******************************************************************
+
+;--- REGISTROS ---
+BAUD    EQU $102B
+SCCR1   EQU $102C
+SCCR2   EQU $102D
+SCSR    EQU $102E
+SCDR    EQU $102F
+
+;--- CONSTANTES ---
+CR      EQU $0D
+LF      EQU $0A
+FF      EQU $0C
+EQUAL   EQU $3D
+
+;--- VARIABLES ---
+        ORG $0000
+DECIMAL     RMB 2
+ROMAN_FLAG  RMB 1
+ERROR_FLAG  RMB 1
+CHAR_COUNT  RMB 1
+TEMP        RMB 4
+PTR_TEMP    RMB 2
+; NUEVAS VARIABLES DE VALIDACION
+LAST_CHAR   RMB 1
+REPEAT_COUNT RMB 1
+        
+        ORG $0020
+INPUT_BUF   RMB 30
+
+        ORG $0050
+OUTPUT_BUF  RMB 32
+
+        ORG $0070
+TEXT_BUF    RMB 80  
+
+;--- PROGRAMA PRINCIPAL ---
+        ORG $8000
+
+START:
+        LDS #$00FF
+        JSR INITSCI
+        JSR CLEAR_SCREEN
+        JSR SENDWEL
+
+MAINLOOP:
+        JSR INITVARS
+        JSR CLEARDISP
+        JSR SENDOK
+        
+        JSR READINPUT
+        BCS MAINLOOP
+        
+        JSR CHECK_COMMAND
+        BCS DO_RESET
+        
+        JSR DETECTTYPE
+        BCS ERROR_HANDLER
+        
+        JSR CONVERTNUM
+        BCS ERROR_HANDLER
+        
+        JSR DISPRESULTS
+        BRA MAINLOOP
+
+DO_RESET:
+        JSR CLEAR_SCREEN
+        JSR SENDWEL
+        BRA MAINLOOP
+
+ERROR_HANDLER:
+        JSR DISPERROR
+        BRA MAINLOOP
+
+;**********************************************************
+; RUTINAS DE COMUNICACION
+;**********************************************************
+INITSCI:
+        LDAA #$30
+        STAA BAUD
+        LDAA #$00
+        STAA SCCR1
+        LDAA #$0C
+        STAA SCCR2
+        RTS
+
+READINPUT:
+        LDX #INPUT_BUF
+        CLR CHAR_COUNT
+RI_LOOP:
+        JSR READCHAR
+        CMPA #CR
+        BEQ RI_DONE
+        CMPA #LF
+        BEQ RI_LOOP
+        CMPA #EQUAL
+        BEQ RI_DONE
+        
+        JSR SENDCHAR
+        STAA 0,X
+        INX
+        INC CHAR_COUNT
+        LDAA CHAR_COUNT
+        CMPA #28
+        BCS RI_LOOP
+RI_DONE:
+        CLR 0,X
+        JSR SENDCRLF
+        LDAA CHAR_COUNT
+        CMPA #0
+        BEQ RI_EMPTY
+        CLC
+        RTS
+RI_EMPTY:
+        SEC
+        RTS
+
+READCHAR:
+        LDAB SCSR
+        ANDB #$20
+        BEQ READCHAR
+        LDAA SCDR
+        RTS
+
+SENDCHAR:
+        LDAB SCSR
+        ANDB #$80
+        BEQ SENDCHAR
+        STAA SCDR
+        RTS
+
+SENDSTR:
+        PSHA
+SS_LOOP:
+        LDAA 0,Y
+        BEQ SS_END
+        JSR SENDCHAR
+        INY
+        BRA SS_LOOP
+SS_END:
+        PULA
+        RTS
+
+SENDCRLF:
+        LDAA #CR
+        JSR SENDCHAR
+        LDAA #LF
+        JSR SENDCHAR
+        RTS
+
+CLEAR_SCREEN:
+        LDAA #FF
+        JSR SENDCHAR
+        RTS
+
+CLEARDISP:
+        LDX #INPUT_BUF
+        LDAB #30
+        JSR WIPE_LOOP
+        LDX #OUTPUT_BUF
+        LDAB #32
+        JSR WIPE_LOOP
+        LDX #TEXT_BUF
+        LDAB #80
+        JSR WIPE_LOOP
+        RTS
+
+WIPE_LOOP:
+        CLR 0,X
+        INX
+        DECB
+        BNE WIPE_LOOP
+        RTS
+
+;**********************************************************
+; LOGICA DE CONVERSION
+;**********************************************************
+INITVARS:
+        CLR ROMAN_FLAG
+        CLR ERROR_FLAG
+        CLR CHAR_COUNT
+        CLR LAST_CHAR    ; Limpiar variables nuevas
+        CLR REPEAT_COUNT
+        LDD #0
+        STD DECIMAL
+        RTS
+
+CHECK_COMMAND:
+        LDX #INPUT_BUF
+        LDAA 0,X
+        ORAA #$20
+        CMPA #'o'
+        BNE NOT_CMD
+        LDAA 1,X
+        ORAA #$20
+        CMPA #'k'
+        BNE NOT_CMD
+        SEC
+        RTS
+NOT_CMD:
+        CLC
+        RTS
+
+DETECTTYPE:
+        LDX #INPUT_BUF
+        LDAA 0,X
+        CMPA #$30
+        BCS CHECK_IS_ROMAN
+        CMPA #$3A       
+        BCS SET_AS_DECIMAL
+CHECK_IS_ROMAN:
+        JSR ISROMANCHAR
+        BCC SET_AS_ROMAN
+        SEC
+        RTS
+SET_AS_DECIMAL:
+        CLR ROMAN_FLAG
+        JSR VALIDATEDEC
+        RTS
+SET_AS_ROMAN:
+        LDAA #1
+        STAA ROMAN_FLAG
+        CLC
+        RTS
+
+CONVERTNUM:
+        LDAA ROMAN_FLAG
+        BNE DO_ROMAN_CONV
+        JSR ASCIITODEC
+        BCS CONV_ERR
+        JSR DECIMALTOROMAN
+        BCS CONV_ERR
+        BRA PREPARE_TEXT
+DO_ROMAN_CONV:
+        JSR ROMANTODEC
+        BCS CONV_ERR
+        JSR DECTOASCII
+PREPARE_TEXT:
+        JSR NUMBERTOTEXT
+        CLC
+        RTS
+CONV_ERR:
+        SEC
+        RTS
+
+;**********************************************************
+; NUMERO A TEXTO
+;**********************************************************
+NUMBERTOTEXT:
+        LDX #TEXT_BUF
+        STX PTR_TEMP
+        
+        CLR 0,X
+        LDD DECIMAL
+        CPD #0
+        BNE NTT_START
+        
+        LDY #TXT_CERO
+        JSR APPEND_TEXT
+        RTS
+        
+NTT_START:
+        LDD DECIMAL
+        LDX #1000
+        IDIV
+        PSHB
+        PSHA
+        XGDX
+        CPD #0
+        BEQ NTT_HUNDREDS
+        TBA
+        LDY #TEXT_THOUSANDS
+        JSR GET_TABLE_STR
+        
+        LDX PTR_TEMP
+        JSR APPEND_TEXT
+        JSR ADD_SPACE
+        STX PTR_TEMP
+
+NTT_HUNDREDS:
+        PULA
+        PULB
+        LDX #100
+        IDIV
+        PSHB
+        PSHA
+        XGDX
+        CPD #0
+        BEQ NTT_TENS_PREP
+        CPD #1
+        BNE NTT_REG_HUND
+        TSY
+        LDAA 0,Y
+        LDAB 1,Y
+        CPD #0
+        BNE NTT_IS_CIENTO
+        LDY #TXT_CIEN
+        
+        LDX PTR_TEMP
+        JSR APPEND_TEXT
+        STX PTR_TEMP
+        
+        BRA NTT_TENS_PREP
+NTT_IS_CIENTO:
+        LDD #1
+NTT_REG_HUND:
+        TBA
+        LDY #TEXT_HUNDREDS
+        JSR GET_TABLE_STR
+        
+        LDX PTR_TEMP
+        JSR APPEND_TEXT
+        JSR ADD_SPACE
+        STX PTR_TEMP
+
+NTT_TENS_PREP:
+        PULA
+        PULB
+        CPD #0
+        BEQ NTT_EXIT
+        CPD #11
+        BCS NTT_NORMAL
+        CPD #20
+        BCC NTT_NORMAL
+        
+        SUBD #10
+        TBA
+        LDY #TEXT_TEENS
+        JSR GET_TABLE_STR
+        
+        LDX PTR_TEMP
+        JSR APPEND_TEXT
+        STX PTR_TEMP
+        
+        BRA NTT_EXIT
+NTT_NORMAL:
+        LDX #10
+        IDIV
+        PSHB
+        PSHA
+        XGDX
+        CPD #0
+        BEQ NTT_UNITS
+        TBA
+        LDY #TEXT_TENS
+        JSR GET_TABLE_STR
+        
+        LDX PTR_TEMP
+        JSR APPEND_TEXT
+        STX PTR_TEMP
+        
+        TSY
+        LDAA 0,Y
+        BEQ NTT_UNITS
+        
+        LDX PTR_TEMP
+        JSR ADD_SPACE
+        LDAA #'y'
+        STAA 0,X
+        INX
+        JSR ADD_SPACE
+        STX PTR_TEMP
+
+NTT_UNITS:
+        PULA
+        PULB
+        CPD #0
+        BEQ NTT_EXIT
+        TBA
+        LDY #TEXT_UNITS
+        JSR GET_TABLE_STR
+        
+        LDX PTR_TEMP
+        JSR APPEND_TEXT
+        STX PTR_TEMP
+
+NTT_EXIT:
+        LDX PTR_TEMP
+        CLR 0,X
+        RTS
+
+;**********************************************************
+; MATEMATICAS Y CONVERSIONES
+;**********************************************************
+ASCIITODEC:
+        LDX #INPUT_BUF
+        LDD #0
+        STD DECIMAL
+AD_LOOP:
+        LDAA 0,X
+        BEQ AD_DONE
+        SUBA #$30
+        BCS AD_ERR
+        CMPA #10
+        BCC AD_ERR
+        
+        PSHA
+        LDD DECIMAL
+        CLC             
+        ASLB
+        ROLA
+        BCS AD_ERR
+        CLC             
+        ASLB
+        ROLA
+        BCS AD_ERR
+        ADDD DECIMAL
+        BCS AD_ERR
+        CLC             
+        ASLB
+        ROLA
+        BCS AD_ERR
+        STD DECIMAL
+        
+        PULA
+        TAB
+        CLRA
+        ADDD DECIMAL
+        BCS AD_ERR
+        STD DECIMAL
+        
+        INX
+        BRA AD_LOOP
+AD_DONE:
+        CLC
+        RTS
+AD_ERR:
+        SEC
+        RTS
+
+DECIMALTOROMAN:
+        LDY #OUTPUT_BUF
+        LDD DECIMAL
+        CPD #0
+        BEQ DR_ERR
+        CPD #4000
+        BCC DR_ERR
+        
+        LDX #1000
+        IDIV
+        PSHB
+        PSHA
+        XGDX
+        TSTB
+        BEQ P_CENT
+LOOP_M: LDAA #'M'
+        STAA 0,Y
+        INY
+        DECB
+        BNE LOOP_M
+P_CENT: PULA
+        PULB
+        
+        LDX #100
+        IDIV
+        PSHB
+        PSHA
+        XGDX
+        
+        PSHY
+        LDY #ROMAN_HUNDREDS
+        JSR GET_ROMAN_STR
+        PULX
+        JSR COPY_TO_BUF
+        PSHX
+        PULY
+        
+        PULA
+        PULB
+        
+        LDX #10
+        IDIV
+        PSHB
+        PSHA
+        XGDX
+        
+        PSHY
+        LDY #ROMAN_TENS
+        JSR GET_ROMAN_STR
+        PULX
+        JSR COPY_TO_BUF
+        PSHX
+        PULY
+        
+        PULA
+        PULB
+        
+        PSHY
+        LDY #ROMAN_UNITS
+        JSR GET_ROMAN_STR
+        PULX
+        JSR COPY_TO_BUF
+        
+        CLR 0,X
+        CLC
+        RTS
+DR_ERR: SEC
+        RTS
+
+ROMANTODEC:
+        LDX #INPUT_BUF
+        LDD #0
+        STD DECIMAL
+        
+        ; Iniciar validacion
+        CLR LAST_CHAR
+        CLR REPEAT_COUNT
+        
+RD_LOOP:
+        LDAA 0,X
+        BEQ RD_DONE
+        
+        ; --- VALIDACION REPETICION ---
+        CMPA LAST_CHAR
+        BNE RD_NEW_CHAR
+        
+        ; Es el mismo caracter
+        INC REPEAT_COUNT
+        LDAA REPEAT_COUNT
+        CMPA #4
+        BEQ RD_ERR_REP  ; Si llego a 4 -> Error
+        BRA RD_PROCESS
+        
+RD_NEW_CHAR:
+        ; Nuevo caracter
+        LDAA 0,X
+        STAA LAST_CHAR
+        LDAA #1
+        STAA REPEAT_COUNT
+        
+RD_PROCESS:
+        LDAA 0,X        ; Recargar A por seguridad
+        JSR GETROMANVAL
+        STD TEMP
+        LDAA 1,X
+        BEQ RD_ADD
+        JSR GETROMANVAL
+        CPD TEMP
+        BEQ RD_ADD
+        BCS RD_ADD
+        
+        LDD TEMP
+        COMB
+        COMA
+        ADDD #1
+        ADDD DECIMAL
+        STD DECIMAL
+        BRA RD_NEXT
+RD_ADD:
+        LDD TEMP
+        ADDD DECIMAL
+        STD DECIMAL
+RD_NEXT:
+        INX
+        BRA RD_LOOP
+RD_DONE:
+        CLC
+        RTS
+RD_ERR_REP:
+        SEC             ; Reportar error por repeticion
+        RTS
+
+DECTOASCII:
+        LDY #OUTPUT_BUF
+        LDD DECIMAL
+        CPD #0
+        BNE DA_START
+        LDAA #'0'
+        STAA 0,Y
+        INY
+        CLR 0,Y
+        RTS
+DA_START:
+DA_LOOP_2:
+        LDX #10
+        IDIV
+        PSHX
+        ADDD #$30
+        STAB 0,Y
+        INY
+        PULX
+        XGDX
+        CPD #0
+        BNE DA_LOOP_2
+        CLR 0,Y
+        JSR REVERSESTRING
+        RTS
+
+;**********************************************************
+; AUXILIARES
+;**********************************************************
+ISROMANCHAR:
+        CMPA #'I'
+        BEQ IRC_OK
+        CMPA #'V'
+        BEQ IRC_OK
+        CMPA #'X'
+        BEQ IRC_OK
+        CMPA #'L'
+        BEQ IRC_OK
+        CMPA #'C'
+        BEQ IRC_OK
+        CMPA #'D'
+        BEQ IRC_OK
+        CMPA #'M'
+        BEQ IRC_OK
+        SEC
+        RTS
+IRC_OK: CLC
+        RTS
+
+GETROMANVAL:
+        CMPA #'I'
+        BNE G_V
+        LDD #1
+        RTS
+G_V:    CMPA #'V'
+        BNE G_X
+        LDD #5
+        RTS
+G_X:    CMPA #'X'
+        BNE G_L
+        LDD #10
+        RTS
+G_L:    CMPA #'L'
+        BNE G_C
+        LDD #50
+        RTS
+G_C:    CMPA #'C'
+        BNE G_D
+        LDD #100
+        RTS
+G_D:    CMPA #'D'
+        BNE G_M
+        LDD #500
+        RTS
+G_M:    LDD #1000
+        RTS
+
+VALIDATEDEC:
+        LDX #INPUT_BUF
+VAL_LOOP:
+        LDAA 0,X
+        BEQ VAL_OK
+        CMPA #$30
+        BCS VAL_ERR
+        CMPA #$3A
+        BCC VAL_ERR
+        INX
+        BRA VAL_LOOP
+VAL_OK: CLC
+        RTS
+VAL_ERR: SEC
+        RTS
+
+GET_TABLE_STR:
+        TSTA
+        BEQ GTS_RET
+GTS_LOOP:
+        TST 0,Y
+        BEQ GTS_NEXT
+        INY
+        BRA GTS_LOOP
+GTS_NEXT:
+        INY
+        DECA
+        BNE GTS_LOOP
+GTS_RET:
+        RTS
+
+GET_ROMAN_STR:
+        TSTB
+        BEQ GRS_EXIT
+        PSHB
+GRS_LOOP_I:
+        LDAA 0,Y
+        BEQ GRS_NEXT_I
+        INY
+        BRA GRS_LOOP_I
+GRS_NEXT_I:
+        INY
+        DECB
+        BNE GRS_LOOP_I
+        PULB
+GRS_EXIT:
+        RTS
+
+COPY_TO_BUF:
+        LDAA 0,Y
+        BEQ CTB_RET
+        STAA 0,X
+        INX
+        INY
+        BRA COPY_TO_BUF
+CTB_RET:
+        RTS
+
+APPEND_TEXT:
+        PSHA
+AT_LOOP:
+        LDAA 0,Y
+        BEQ AT_DONE
+        STAA 0,X
+        INX
+        INY
+        BRA AT_LOOP
+AT_DONE:
+        PULA
+        RTS
+
+ADD_SPACE:
+        LDAA #' '
+        STAA 0,X
+        INX
+        RTS
+
+REVERSESTRING:
+        LDX #OUTPUT_BUF
+RS_F:   TST 0,X
+        BEQ RS_B
+        INX
+        BRA RS_F
+RS_B:   DEX
+        STX PTR_TEMP
+        LDX #OUTPUT_BUF
+        LDY PTR_TEMP
+RS_SWAP:
+        CPX PTR_TEMP
+        BCC RS_END
+        LDAA 0,X
+        LDAB 0,Y
+        STAA 0,Y
+        STAB 0,X
+        INX
+        DEY
+        STY PTR_TEMP
+        BRA RS_SWAP
+RS_END:
+        RTS
+
+DISPRESULTS:
+        LDY #MSG_RES
+        JSR SENDSTR
+        LDY #OUTPUT_BUF
+        JSR SENDSTR
+        JSR SENDCRLF
+        LDAA #'('
+        JSR SENDCHAR
+        LDY #TEXT_BUF
+        JSR SENDSTR
+        LDAA #')'
+        JSR SENDCHAR
+        JSR SENDCRLF
+        RTS
+
+DISPERROR:
+        LDY #MSG_ERR
+        JSR SENDSTR
+        RTS
+
+SENDWEL:
+        LDY #MSG_WEL
+        JSR SENDSTR
+        RTS
+SENDOK:
+        LDY #MSG_PROMPT
+        JSR SENDSTR
+        RTS
+
+;**********************************************************
+; TABLAS DE DATOS
+;**********************************************************
+MSG_WEL:    FCC "SISTEMA LISTO VALIDATED"
+            FCB CR,LF,0
+MSG_PROMPT: FCC "DATO: "
+            FCB 0
+MSG_RES:    FCC "RES: "
+            FCB 0
+MSG_ERR:    FCC "ERROR"
+            FCB CR,LF,0
+TXT_CERO:   FCC "cero"
+            FCB 0
+TXT_CIEN:   FCC "cien"
+            FCB 0
+
+TEXT_UNITS: FCB 0
+            FCC "uno"
+            FCB 0
+            FCC "dos"
+            FCB 0
+            FCC "tres"
+            FCB 0
+            FCC "cuatro"
+            FCB 0
+            FCC "cinco"
+            FCB 0
+            FCC "seis"
+            FCB 0
+            FCC "siete"
+            FCB 0
+            FCC "ocho"
+            FCB 0
+            FCC "nueve"
+            FCB 0
+
+TEXT_TENS:  FCB 0
+            FCC "diez"
+            FCB 0
+            FCC "veinte"
+            FCB 0
+            FCC "treinta"
+            FCB 0
+            FCC "cuarenta"
+            FCB 0
+            FCC "cincuenta"
+            FCB 0
+            FCC "sesenta"
+            FCB 0
+            FCC "setenta"
+            FCB 0
+            FCC "ochenta"
+            FCB 0
+            FCC "noventa"
+            FCB 0
+
+TEXT_HUNDREDS: FCB 0
+            FCC "ciento"
+            FCB 0
+            FCC "doscientos"
+            FCB 0
+            FCC "trescientos"
+            FCB 0
+            FCC "cuatrocientos"
+            FCB 0
+            FCC "quinientos"
+            FCB 0
+            FCC "seiscientos"
+            FCB 0
+            FCC "setecientos"
+            FCB 0
+            FCC "ochocientos"
+            FCB 0
+            FCC "novecientos"
+            FCB 0
+
+TEXT_THOUSANDS: FCB 0
+            FCC "mil"
+            FCB 0
+            FCC "dos mil"
+            FCB 0
+            FCC "tres mil"
+            FCB 0
+            FCC "cuatro mil"
+            FCB 0
+            FCC "cinco mil"
+            FCB 0
+            FCC "seis mil"
+            FCB 0
+            FCC "siete mil"
+            FCB 0
+            FCC "ocho mil"
+            FCB 0
+            FCC "nueve mil"
+            FCB 0
+
+TEXT_TEENS: FCB 0
+            FCC "once"
+            FCB 0
+            FCC "doce"
+            FCB 0
+            FCC "trece"
+            FCB 0
+            FCC "catorce"
+            FCB 0
+            FCC "quince"
+            FCB 0
+            FCC "dieciseis"
+            FCB 0
+            FCC "diecisiete"
+            FCB 0
+            FCC "dieciocho"
+            FCB 0
+            FCC "diecinueve"
+            FCB 0
+
+ROMAN_HUNDREDS: FCB 0
+            FCC "C"
+            FCB 0
+            FCC "CC"
+            FCB 0
+            FCC "CCC"
+            FCB 0
+            FCC "CD"
+            FCB 0
+            FCC "D"
+            FCB 0
+            FCC "DC"
+            FCB 0
+            FCC "DCC"
+            FCB 0
+            FCC "DCCC"
+            FCB 0
+            FCC "CM"
+            FCB 0
+
+ROMAN_TENS: FCB 0
+            FCC "X"
+            FCB 0
+            FCC "XX"
+            FCB 0
+            FCC "XXX"
+            FCB 0
+            FCC "XL"
+            FCB 0
+            FCC "L"
+            FCB 0
+            FCC "LX"
+            FCB 0
+            FCC "LXX"
+            FCB 0
+            FCC "LXXX"
+            FCB 0
+            FCC "XC"
+            FCB 0
+
+ROMAN_UNITS: FCB 0
+            FCC "I"
+            FCB 0
+            FCC "II"
+            FCB 0
+            FCC "III"
+            FCB 0
+            FCC "IV"
+            FCB 0
+            FCC "V"
+            FCB 0
+            FCC "VI"
+            FCB 0
+            FCC "VII"
+            FCB 0
+            FCC "VIII"
+            FCB 0
+            FCC "IX"
+            FCB 0
+
+            ORG $FFFE
+            FDB START
+            END
