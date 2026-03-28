@@ -1,12 +1,7 @@
 ;******************************************************************
 ; CONVERSOR MC68HC11 - VERSION FINAL 
 ;
-;Proyecto 2
-;Calificacion: 7
-;Equipo: Aranda Marròn Fernando 
 ;Nieto Montes Aldo 
-;Cote Martinez Axel Fabian
-;Sosa Cibriàn Sebastian
 ;Fecha: 27/NOV/2025
 ;******************************************************************
 
